@@ -71,11 +71,17 @@ services:
     networks: [mymap]
 
   # ---- ניתוב: Valhalla ----
+  # התמונה ה"רגילה" ללא build script; ה-"scripted" בונה את הגרף אוטומטית מ-tile_urls
   valhalla:
-    image: ghcr.io/valhalla/valhalla:latest  # MIT — בדוק tag עדכני
+    image: ghcr.io/valhalla/valhalla-scripted:latest  # MIT — בדוק tag עדכני
     container_name: mymap-valhalla
+    environment:
+      tile_urls: https://download.geofabrik.de/asia/israel-and-palestine-latest.osm.pbf
+      use_tiles_ignore_pbf: "False"          # לבנות מה-PBF בהפעלה הראשונה
+      build_admins: "True"
+      build_time_zones: "True"
     volumes:
-      - ./valhalla:/data                     # גרף הניתוב (מ-OSM ישראל)
+      - ./valhalla:/custom_files             # PBF + גרף הניתוב הבנוי
     ports: ["8002:8002"]
     networks: [mymap]
 

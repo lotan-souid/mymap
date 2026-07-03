@@ -31,7 +31,7 @@
 | TiTiler | חיתוך רסטר דינמי מ-Cloud-Optimized GeoTIFF | 8000 | MIT |
 | GeoServer | שער תאימות: WMS / WFS / WCS לתקני OGC | 8600 | GPLv2 |
 | OpenSearch | חיפוש טקסט חופשי (fork פתוח של Elasticsearch) | 9200 | Apache-2.0 |
-| Valhalla | מנוע ניתוב, אזורי שירות, אופטימיזציית מסלולים | 8002 | MIT |
+| Valhalla | מנוע ניתוב, אזורי שירות, אופטימיזציית מסלולים (בונה גרף אוטומטית מ-OSM בהפעלה ראשונה) | 8002 | MIT |
 | Keycloak | ניהול זהויות והרשאות (OIDC) | 8080 | Apache-2.0 |
 | MinIO | אחסון אובייקטים S3-compatible (אריחים, תצ"א) | 9000 / 9001 | AGPLv3 |
 | Caddy (web) | reverse proxy, TLS, והגשת ה-frontend | 80 / 443 | Apache-2.0 |
@@ -94,13 +94,150 @@ docker compose up -d
 docker compose ps
 ```
 
+**Martin** עולה מוכן לעבודה: [config/martin.yaml](config/martin.yaml) מגדיר `auto_publish: true`,
+כך שכל טבלה/פונקציה מרחבית ב-PostGIS נחשפת כאריח וקטורי אוטומטית — בלי צורך
+לרשום כל שכבה ידנית.
+
+**Valhalla** (`valhalla-scripted`) מוריד ובונה את גרף הניתוב אוטומטית בהפעלה
+הראשונה, מתוך `tile_urls` שמוגדר ב-[docker-compose.yml](docker-compose.yml)
+(תמצית OSM ישראל+פלסטין מ-Geofabrik, ~115MB). התהליך לוקח כמה דקות; אפשר לעקוב עם
+`docker logs -f mymap-valhalla`. הגרף הבנוי נשמר ב-`./valhalla`, כך שבהפעלות
+הבאות אין הורדה/בנייה חוזרת — רק שינוי ה-PBF מפעיל בנייה מחדש.
+
 כתובות ברירת מחדל לאחר ההרמה:
 
 - MapLibre GL (frontend): `http://localhost/`
 - Martin (אריחים): `http://localhost:3000/`
+- TiTiler (רסטר): `http://localhost:8000/`
 - GeoServer (ניהול): `http://localhost:8600/geoserver/`
+- Valhalla (ניתוב): `http://localhost:8002/`
 - Keycloak (ניהול): `http://localhost:8080/`
 - MinIO (קונסולה): `http://localhost:9001/`
+
+---
+
+## תרחישי שימוש ודוגמאות
+
+הסטאק תומך במגוון צרכנים — מפה אינטראקטיבית בדפדפן, כלי GIS שולחניים, ואינטגרציות
+מערכתיות. להלן דוגמאות לשימושים הנפוצים ביותר, לפי שכבה.
+
+### 1. מפה אינטראקטיבית בדפדפן (MapLibre GL JS + Martin)
+
+הלקוח הציבורי — מציג את בסיס-המפה ואת שכבות ה-MVT ישירות מ-Martin. זהו הנתיב
+הציבורי בנפח הגבוה (`PostGIS → Martin → MapLibre`):
+
+```js
+import maplibregl from 'maplibre-gl';
+
+const map = new maplibregl.Map({
+  container: 'map',
+  center: [34.78, 32.08],   // תל אביב
+  zoom: 12,
+  style: {
+    version: 8,
+    sources: {
+      parcels: {
+        type: 'vector',
+        tiles: ['http://localhost/tiles/parcels/{z}/{x}/{y}'],  // דרך Caddy
+      },
+    },
+    layers: [
+      { id: 'parcels-fill', type: 'fill', source: 'parcels', 'source-layer': 'parcels',
+        paint: { 'fill-color': '#2b7fff', 'fill-opacity': 0.3 } },
+    ],
+  },
+});
+```
+
+### 2. גישה ישירה לקטלוג האריחים של Martin
+
+שימושי לבדיקה מהירה של אילו שכבות פורסמו אוטומטית מ-PostGIS:
+
+```bash
+curl http://localhost:3000/catalog | jq
+# → רשימת כל הטבלאות/הפונקציות המרחביות שהתגלו אוטומטית (auto_publish)
+
+curl http://localhost:3000/parcels/12/2467/1600 -o tile.pbf   # אריח MVT בודד
+```
+
+### 3. חיתוך רסטר דינמי (תצ"א) עם TiTiler
+
+לשכבות תצלומי אוויר/לוויין שמאוחסנות כ-COG ב-MinIO:
+
+```bash
+# תצוגה מקדימה
+curl "http://localhost:8000/cog/preview.png?url=s3://tiles/ortho2026.tif&width=512"
+
+# תבנית XYZ לשילוב ישיר במפה (MapLibre/Leaflet)
+http://localhost:8000/cog/tiles/{z}/{x}/{y}.png?url=s3://tiles/ortho2026.tif
+```
+
+### 4. תאימות OGC ל-QGIS / ArcGIS (GeoServer)
+
+הנתיב השני — צרכנים ממשלתיים/ארגוניים חיצוניים שדורשים תקן, לא אריחים ישירים.
+ב-QGIS: **Layer → Add Layer → Add WMS/WFS Layer**, עם הכתובת:
+
+```
+WMS: http://localhost:8600/geoserver/wms
+WFS: http://localhost:8600/geoserver/wfs
+```
+
+לדוגמה, שליפת Features כ-GeoJSON ישירות (למשל לסקריפט ניתוח בפייתון):
+
+```bash
+curl "http://localhost:8600/geoserver/wfs?service=WFS&version=2.0.0&request=GetFeature\
+&typeNames=gis:parcels&outputFormat=application/json"
+```
+
+### 5. חישוב מסלול (Valhalla)
+
+מנוע ניתוב לרכב/הולכי רגל/אופניים, כולל אזורי שירות (isochrones):
+
+```bash
+curl -X POST http://localhost:8002/route -H "Content-Type: application/json" -d '{
+  "locations": [
+    {"lat": 32.0809, "lon": 34.7806},
+    {"lat": 31.7683, "lon": 35.2137}
+  ],
+  "costing": "auto"
+}'
+# → מסלול תל אביב - ירושלים, עם מרחק/זמן/geometry מקודד (polyline6)
+```
+
+### 6. חיפוש טקסט חופשי (OpenSearch)
+
+אינדוקס וחיפוש כתובות/נקודות עניין — משלים את החיפוש המרחבי ב-PostGIS:
+
+```bash
+# אינדוקס מסמך
+curl -X POST http://localhost:9200/places/_doc -H "Content-Type: application/json" -d '{
+  "name": "כיכר רבין", "city": "תל אביב", "lat": 32.0809, "lon": 34.7806
+}'
+
+# חיפוש
+curl "http://localhost:9200/places/_search?q=name:רבין"
+```
+
+### 7. גישה מוגנת ל"אזור אישי" (Keycloak OIDC)
+
+זרימת אימות טיפוסית: הלקוח מפנה ל-Keycloak להתחברות, מקבל access token,
+ומצרף אותו לבקשות לשירותים מוגנים (למשל שכבות פרטיות ב-GeoServer/Martin):
+
+```bash
+curl -X POST "http://localhost:8080/realms/mymap/protocol/openid-connect/token" \
+  -d "client_id=mymap-web" -d "grant_type=password" \
+  -d "username=user1" -d "password=***" \
+  | jq -r .access_token
+# → הטוקן מצורף כ- Authorization: Bearer <token> לבקשות הבאות
+```
+
+### 8. אחסון ושליפת תצ"א (MinIO)
+
+```bash
+# הגדרת alias וייבוא קובץ COG (חד-פעמי, בעזרת mc — MinIO client)
+mc alias set mymap http://localhost:9000 mymap <MINIO_PASSWORD>
+mc cp ortho2026.tif mymap/tiles/ortho2026.tif
+```
 
 ---
 
@@ -141,4 +278,7 @@ OSM תחת ODbL, ונתוני הבנ"טל/מפ"י כפופים לרישוי הי
 - **אבטחת OpenSearch:** `DISABLE_SECURITY_PLUGIN=true` הוא לפיתוח בלבד — הפעל אבטחה בפרודקשן.
 - **TLS:** Caddy מנפיק תעודות אוטומטית מול דומיין אמיתי (לא localhost).
 - **גיבוי:** גבה את הווליומים `pgdata` ו-`geoserver_data` (ה-`data_dir`).
+- **Valhalla בפרודקשן:** הורדה מ-`tile_urls` בכל הפעלה תלויה בזמינות Geofabrik. לסביבה
+  יציבה/אופליין, הורד את קובץ ה-PBF מראש והנח אותו ב-`./valhalla`, והחלף את `tile_urls`
+  ב-`use_tiles_ignore_pbf: "True"` כדי להשתמש בגרף הקיים בלי לבדוק הורדה מחדש.
 - **סקייל:** לסקייל לאומי — Kubernetes, read replicas ל-PostGIS, אשכול OpenSearch, ו-CDN מול ה-PMTiles.
