@@ -2,8 +2,8 @@
 .env
 .env.*.local
 
-# --- הגדרות מקומיות של Claude Code ---
-.claude/settings.local.json
+# --- Claude Code ---
+.claude/
 
 # --- דאטה גדולה שנוצרת ע"י כלים (Planetiler / Valhalla builder) ---
 tiles/*
