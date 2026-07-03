@@ -1,0 +1,32 @@
+# ---------------------------------------------------------------------------
+# mymap — Caddy: reverse proxy + הגשת ה-frontend (MapLibre GL)
+# ---------------------------------------------------------------------------
+
+:80 {
+	# אריחים וקטוריים (Martin)
+	handle_path /tiles/* {
+		reverse_proxy martin:3000
+	}
+
+	# רסטר דינמי (TiTiler)
+	handle_path /cog/* {
+		reverse_proxy titiler:8000
+	}
+
+	# תאימות OGC (GeoServer)
+	handle /geoserver/* {
+		reverse_proxy geoserver:8080
+	}
+
+	# זהות (Keycloak)
+	handle_path /auth/* {
+		reverse_proxy keycloak:8080
+	}
+
+	# ברירת מחדל: אפליקציית ה-frontend הסטטית
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

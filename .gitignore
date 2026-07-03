@@ -1,0 +1,20 @@
+# --- סודות ---
+.env
+.env.*.local
+
+# --- הגדרות מקומיות של Claude Code ---
+.claude/settings.local.json
+
+# --- דאטה גדולה שנוצרת ע"י כלים (Planetiler / Valhalla builder) ---
+tiles/*
+!tiles/.gitkeep
+valhalla/*
+!valhalla/.gitkeep
+
+# --- Frontend (למקרה שיתווסף build מבוסס Node) ---
+frontend/node_modules/
+frontend/dist/
+
+# --- מערכת הפעלה / עורכים ---
+.DS_Store
+Thumbs.db

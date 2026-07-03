@@ -1,0 +1,131 @@
+# ---------------------------------------------------------------------------
+# mymap — Modern open-source GIS stack (GovMap-style)
+# כל הרכיבים קוד פתוח. סודות מנוהלים דרך .env. קבע (pin) גרסאות בפרודקשן.
+# ---------------------------------------------------------------------------
+name: mymap
+
+services:
+
+  # ---- שכבת נתונים: PostgreSQL + PostGIS ----
+  postgis:
+    image: postgis/postgis:16-3.4            # PostgreSQL License + GPLv2
+    container_name: mymap-postgis
+    environment:
+      POSTGRES_DB: ${PG_DB}
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    shm_size: 1g                             # חשוב לשאילתות מרחביות כבדות
+    ports: ["5432:5432"]
+    networks: [mymap]
+
+  # ---- שירות אריחים וקטוריים: Martin (Rust) מעל PostGIS + PMTiles ----
+  martin:
+    image: ghcr.io/maplibre/martin:latest    # MIT / Apache-2.0
+    container_name: mymap-martin
+    command: --config /config/martin.yaml
+    environment:
+      DATABASE_URL: postgres://${PG_USER}:${PG_PASSWORD}@postgis/${PG_DB}
+    volumes:
+      - ./config:/config
+      - ./tiles:/tiles                       # קבצי .pmtiles מ-Planetiler
+    ports: ["3000:3000"]
+    depends_on: [postgis]
+    networks: [mymap]
+
+  # ---- רסטר דינמי: TiTiler מעל Cloud-Optimized GeoTIFF ----
+  titiler:
+    image: ghcr.io/developmentseed/titiler:latest   # MIT
+    container_name: mymap-titiler
+    environment:
+      TITILER_API_CORS_ORIGINS: "*"
+    ports: ["8000:8000"]
+    networks: [mymap]
+
+  # ---- שער תאימות / תקני OGC: GeoServer (WMS / WFS / WCS) ----
+  geoserver:
+    image: kartoza/geoserver:2.26.0          # GPLv2 — בדוק/קבע tag עדכני
+    container_name: mymap-geoserver
+    environment:
+      GEOSERVER_ADMIN_USER: ${GEOSERVER_ADMIN_USER}
+      GEOSERVER_ADMIN_PASSWORD: ${GEOSERVER_ADMIN_PASSWORD}
+      # מאגר ה-PostGIS מוגדר דרך ה-UI/REST: host=postgis, db=${PG_DB}
+    volumes:
+      - geoserver_data:/opt/geoserver/data_dir
+    ports: ["8600:8080"]                     # 8080 תפוס ע"י Keycloak
+    depends_on: [postgis]
+    networks: [mymap]
+
+  # ---- חיפוש: OpenSearch (fork פתוח של Elasticsearch) ----
+  opensearch:
+    image: opensearchproject/opensearch:2    # Apache-2.0
+    container_name: mymap-opensearch
+    environment:
+      discovery.type: single-node
+      OPENSEARCH_JAVA_OPTS: "-Xms${OPENSEARCH_HEAP} -Xmx${OPENSEARCH_HEAP}"
+      DISABLE_SECURITY_PLUGIN: "true"        # פיתוח בלבד!
+    volumes:
+      - osdata:/usr/share/opensearch/data
+    ports: ["9200:9200"]
+    networks: [mymap]
+
+  # ---- ניתוב: Valhalla ----
+  valhalla:
+    image: ghcr.io/valhalla/valhalla:latest  # MIT — בדוק tag עדכני
+    container_name: mymap-valhalla
+    volumes:
+      - ./valhalla:/data                     # גרף הניתוב (מ-OSM ישראל)
+    ports: ["8002:8002"]
+    networks: [mymap]
+
+  # ---- זהות וניהול משתמשים: Keycloak (OIDC) ----
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest  # Apache-2.0
+    container_name: mymap-keycloak
+    command: start-dev
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: ${KC_PASSWORD}
+    ports: ["8080:8080"]
+    networks: [mymap]
+
+  # ---- אחסון אובייקטים (S3-compatible) לאריחים ולתצ"א ----
+  minio:
+    image: minio/minio:latest                # AGPLv3 — ראה הערת רישוי במסמך
+    container_name: mymap-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
+    volumes:
+      - miniodata:/data
+    ports: ["9000:9000", "9001:9001"]
+    networks: [mymap]
+
+  # ---- Frontend (MapLibre GL) + reverse proxy ----
+  web:
+    image: caddy:2                           # Apache-2.0
+    container_name: mymap-web
+    volumes:
+      - ./frontend:/srv                       # אפליקציית MapLibre GL JS
+      - ./Caddyfile:/etc/caddy/Caddyfile
+    ports: ["80:80", "443:443"]
+    depends_on: [martin, titiler, geoserver, keycloak]
+    networks: [mymap]
+
+volumes:
+  pgdata:
+  osdata:
+  miniodata:
+  geoserver_data:
+
+networks:
+  mymap:
+    name: mymap
+
+# ---------------------------------------------------------------------------
+# Planetiler — job חד-פעמי לייצור בסיס-המפה (לא שירות ארוך-חיים):
+#   docker run -v ./tiles:/data ghcr.io/onthegomap/planetiler:latest \
+#     --area=israel --output=/data/israel.pmtiles
+# ---------------------------------------------------------------------------
